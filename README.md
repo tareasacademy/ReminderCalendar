@@ -7,6 +7,7 @@ A calendar app for Windows that reminds you of things with a pop-up alert. It ru
 - Get alerted at the time, or 5 minutes up to 1 day before
 - Pop-up alerts with Snooze 5 min / 15 min
 - Starts with Windows (can be turned off in the app)
+- Updates itself automatically from this repository
 
 ## Install
 

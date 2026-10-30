@@ -1,14 +1,20 @@
 #requires -version 5.1
 # Reminder Calendar - a tray app that keeps a calendar of reminders and
 # shows a pop-up alert when they're due.
-param([switch]$Minimized, [string]$Snapshot)
+param([switch]$Minimized, [string]$Snapshot, [int]$WaitPid)
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Drawing
 # Route WinForms (tray menu) errors to our handler instead of a crash dialog.
 [System.Windows.Forms.Application]::SetUnhandledExceptionMode('CatchException')
 
 $AppName      = 'Reminder Calendar'
+$AppVersion   = '1.3.0'
+$Repo         = 'tareasacademy/ReminderCalendar'
+$RawBase      = "https://raw.githubusercontent.com/$Repo/refs/heads/main"
 $ScriptPath   = $PSCommandPath
+$IconFile     = Join-Path (Split-Path $PSCommandPath) 'icon.ico'
+# A git checkout is a development copy: it never overwrites itself with the GitHub version.
+$IsDevCopy    = Test-Path (Join-Path (Split-Path $PSCommandPath) '.git')
 $DataDir      = Join-Path $env:APPDATA 'ReminderCalendar'
 $DataFile     = Join-Path $DataDir 'reminders.json'
 $SettingsFile = Join-Path $DataDir 'settings.json'
@@ -21,6 +27,9 @@ $RepeatOptions = [ordered]@{ 'Never' = 'None'; 'Minutes' = 'Minutely'; 'Hours' =
 $RepeatUnits   = @{ Minutely = 'minute'; Hourly = 'hour'; Daily = 'day'; Weekly = 'week'; Monthly = 'month'; Yearly = 'year' }
 $LeadOptions   = [ordered]@{ 'At time' = 0; '5 min' = 5; '10 min' = 10; '15 min' = 15; '30 min' = 30; '1 hour' = 60; '2 hours' = 120; '1 day' = 1440 }
 $Colors        = [ordered]@{ Violet = '#7C5CFF'; Blue = '#3B82F6'; Teal = '#14B8A6'; Green = '#22C55E'; Amber = '#F59E0B'; Rose = '#F43F5E' }
+
+# After an update the new copy waits for the old one to quit before taking over.
+if ($WaitPid) { try { [void](Get-Process -Id $WaitPid -ErrorAction Stop).WaitForExit(20000) } catch {} }
 
 # ---- single instance: a second launch just tells the running one to show itself
 $created   = $false
@@ -259,6 +268,7 @@ function Set-Startup([bool]$on) {
     $s.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
     $s.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -Minimized"
     $s.WorkingDirectory = Split-Path $ScriptPath
+    if (Test-Path $IconFile) { $s.IconLocation = $IconFile }
     $s.WindowStyle = 7
     $s.Save()
 }
@@ -571,9 +581,27 @@ $MainXaml = @'
             <StackPanel x:Name="UpList" Margin="0,0,10,0"/>
           </ScrollViewer>
           <StackPanel Grid.Row="4" Margin="0,14,0,0">
+            <Border x:Name="UpdateBanner" Visibility="Collapsed" Background="#221C3A" BorderBrush="{StaticResource Accent}"
+                    BorderThickness="1" CornerRadius="10" Padding="12,10" Margin="0,0,0,14">
+              <StackPanel>
+                <StackPanel Orientation="Horizontal">
+                  <TextBlock Text="&#xE896;" FontFamily="{StaticResource Icons}" Foreground="{StaticResource AccentHover}"
+                             VerticalAlignment="Center" Margin="0,1,8,0"/>
+                  <TextBlock x:Name="TxtUpdateBanner" FontWeight="SemiBold"/>
+                </StackPanel>
+                <TextBlock Text="Restart the app to start using it." Foreground="{StaticResource Muted}" FontSize="12" Margin="0,3,0,10"/>
+                <Button x:Name="BtnRestart" Style="{StaticResource AccentBtn}" Content="Restart now" Padding="12,6"/>
+              </StackPanel>
+            </Border>
             <Border Height="1" Background="{StaticResource Line}" Margin="0,0,0,16"/>
             <CheckBox x:Name="ChkStartup" Style="{StaticResource Switch}" Content="Start with Windows" Margin="0,0,0,16"/>
             <Button x:Name="BtnTest" Style="{StaticResource Ghost}" Content="Send test notification"/>
+            <Grid Margin="2,12,0,0">
+              <TextBlock x:Name="TxtVersion" Foreground="{StaticResource Faint}" FontSize="11.5" VerticalAlignment="Center"/>
+              <Button x:Name="BtnCheckUpdate" Style="{StaticResource BtnBase}" Padding="0" Foreground="{StaticResource Muted}"
+                      FontSize="11.5" HorizontalAlignment="Right" Content="Check for updates"/>
+            </Grid>
+            <TextBlock x:Name="TxtUpdate" Foreground="{StaticResource Muted}" FontSize="11.5" Margin="2,4,0,0" Visibility="Collapsed"/>
           </StackPanel>
         </Grid>
       </Border>
@@ -746,6 +774,7 @@ $app.add_DispatcherUnhandledException({ Write-ErrorLog $_.Exception; $_.Handled 
 
 $win = [Windows.Markup.XamlReader]::Parse($MainXaml)
 foreach ($n in 'TxtClock', 'BtnNew', 'UpList', 'ChkStartup', 'BtnTest', 'TxtMonth', 'TxtYear', 'BtnToday',
+               'UpdateBanner', 'TxtUpdateBanner', 'BtnRestart', 'TxtVersion', 'BtnCheckUpdate', 'TxtUpdate',
                'BtnPrev', 'BtnNext', 'WeekHdr', 'MonthGrid', 'TxtDayName', 'TxtDayDate', 'BtnAddDay', 'DayList', 'Overlay',
                'EdHeading', 'EdClose', 'EdTitle', 'EdDate', 'EdDatePrev', 'EdDateNext', 'EdTime', 'EdRepeat', 'EdLead',
                'EdColors', 'EdNotes', 'EdError', 'EdDelete', 'EdCancel', 'EdSave', 'EdRepeatOpts', 'EdIntMinus',
@@ -755,8 +784,9 @@ foreach ($n in 'TxtClock', 'BtnNew', 'UpList', 'ChkStartup', 'BtnTest', 'TxtMont
 
 $iconBmp = New-IconBitmap 64
 $trayIcon = [System.Drawing.Icon]::FromHandle($iconBmp.GetHicon())
-$win.Icon = [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($trayIcon.Handle, [System.Windows.Int32Rect]::Empty,
-    [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions())
+$win.Icon = if (Test-Path $IconFile) { [System.Windows.Media.Imaging.BitmapFrame]::Create([Uri]$IconFile) }
+            else { [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHIcon($trayIcon.Handle, [System.Windows.Int32Rect]::Empty,
+                       [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions()) }
 $win.add_SourceInitialized({ Set-DarkTitleBar $win })
 
 # ---- small element builders
@@ -1434,16 +1464,96 @@ $miOpen.Font = New-Object System.Drawing.Font($menu.Font, [System.Drawing.FontSt
 $miOpen.add_Click({ Show-Main })
 $menu.Items.Add('New reminder...').add_Click({ Open-Editor $null $script:SelDate })
 [void]$menu.Items.Add('-')
-$menu.Items.Add('Exit').add_Click({
+$menu.Items.Add('Exit').add_Click({ Stop-App })
+$tray.ContextMenuStrip = $menu
+$tray.add_MouseClick({ if ($_.Button -eq 'Left') { Show-Main } })
+
+
+function Stop-App {
     $script:Exiting = $true
     $tray.Visible = $false
     foreach ($p in @($script:Popups)) { $p.Close() }
     $win.Close()
     $app.Shutdown()
-})
-$tray.ContextMenuStrip = $menu
-$tray.add_MouseClick({ if ($_.Button -eq 'Left') { Show-Main } })
+}
 
+# ---- auto-update: download the latest script from GitHub, swap it in, restart
+$script:UpdateTask = $null
+$script:UpdateManual = $false
+$script:UpdateReady = $false
+$script:NextUpdateCheck = (Get-Date).AddSeconds(20)
+$script:Http = $null
+
+function Set-UpdateStatus([string]$text) {
+    $TxtUpdate.Text = $text
+    $TxtUpdate.Visibility = if ($text) { 'Visible' } else { 'Collapsed' }
+}
+
+function Get-Sha([byte[]]$bytes) {
+    [Convert]::ToBase64String([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes))
+}
+
+function Start-UpdateCheck([switch]$Manual) {
+    if ($IsDevCopy -or $script:UpdateTask -or $script:UpdateReady) { return }
+    if (-not $script:Http) {
+        Add-Type -AssemblyName System.Net.Http
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $script:Http = New-Object System.Net.Http.HttpClient
+        $script:Http.Timeout = [TimeSpan]::FromSeconds(30)
+    }
+    $script:UpdateManual = [bool]$Manual
+    if ($Manual) { Set-UpdateStatus 'Checking for updates...' }
+    # polled from the timer, so no callback ever runs off the UI thread
+    $script:UpdateTask = $script:Http.GetByteArrayAsync("$RawBase/ReminderCalendar.ps1")
+}
+
+function Complete-UpdateCheck {
+    $task = $script:UpdateTask
+    $script:UpdateTask = $null
+    $script:NextUpdateCheck = (Get-Date).AddHours(6)
+    if ($task.Status -ne 'RanToCompletion') {
+        if ($script:UpdateManual) { Set-UpdateStatus "Couldn't reach GitHub. Try again later." }
+        return
+    }
+    $bytes = $task.Result
+    if ((Get-Sha $bytes) -eq (Get-Sha ([IO.File]::ReadAllBytes($ScriptPath)))) {
+        if ($script:UpdateManual) { Set-UpdateStatus "You're up to date." }
+        return
+    }
+    # Only accept something that is really this app and parses cleanly.
+    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    $tok = $null; $errs = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$tok, [ref]$errs)
+    if ($errs.Count -or $text -notmatch "\`$AppName\s*=\s*'Reminder Calendar'") {
+        Write-ErrorLog "Update rejected: downloaded file failed validation."
+        if ($script:UpdateManual) { Set-UpdateStatus "The update looked broken, so it was skipped." }
+        return
+    }
+    $ver = if ($text -match "\`$AppVersion\s*=\s*'([^']+)'") { $Matches[1] } else { 'A new version' }
+
+    # The running copy is already in memory, so the file can be replaced now.
+    $tmp = "$ScriptPath.new"
+    [IO.File]::WriteAllBytes($tmp, $bytes)
+    Move-Item -Path $tmp -Destination $ScriptPath -Force
+    if (-not (Test-Path $IconFile)) {
+        try { [IO.File]::WriteAllBytes($IconFile, $script:Http.GetByteArrayAsync("$RawBase/icon.ico").Result) } catch {}
+    }
+    $script:UpdateReady = $true
+    $TxtUpdateBanner.Text = $(if ($ver -match '^\d') { "Version $ver is ready" } else { "$ver is ready" })
+    $UpdateBanner.Visibility = 'Visible'
+    Set-UpdateStatus ''
+}
+
+function Restart-App([switch]$Hidden) {
+    $argList = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -WaitPid $PID" + $(if ($Hidden) { ' -Minimized' })
+    Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList $argList -WindowStyle Hidden
+    Stop-App
+}
+
+$TxtVersion.Text = "Version $AppVersion" + $(if ($IsDevCopy) { ' (dev copy)' })
+if ($IsDevCopy) { $BtnCheckUpdate.Visibility = 'Collapsed' }
+$BtnCheckUpdate.add_Click({ Start-UpdateCheck -Manual })
+$BtnRestart.add_Click({ Restart-App })
 
 # Closing the window just hides it - reminders keep running in the tray.
 $script:Exiting = $false
@@ -1511,10 +1621,19 @@ if ($Snapshot) {
     Update-Views
     Save-Visual $win.Content (Join-Path $Snapshot 'after.png')
 
-    # let queued dispatcher work run, then quit
+    # let queued dispatcher work run (and an update check finish), then quit
+    Start-UpdateCheck -Manual
+    $script:QuitAt = (Get-Date).AddSeconds(25)
     $quit = New-Object System.Windows.Threading.DispatcherTimer
-    $quit.Interval = [TimeSpan]::FromSeconds(2)
-    $quit.add_Tick({ $app.Shutdown() })
+    $quit.Interval = [TimeSpan]::FromMilliseconds(250)
+    $quit.add_Tick({
+        if ($script:UpdateTask -and $script:UpdateTask.IsCompleted) { Complete-UpdateCheck }
+        if (-not $script:UpdateTask -or (Get-Date) -ge $script:QuitAt) {
+            Update-Views
+            Save-Visual $win.Content (Join-Path $Snapshot 'final.png')
+            $app.Shutdown()
+        }
+    })
     $quit.Start()
     [void]$app.Run()
     return
@@ -1526,6 +1645,10 @@ $script:LastDay = (Get-Date).Date
 $timer.add_Tick({
     if ($showEvent.WaitOne(0)) { Show-Main }
     Invoke-ReminderCheck
+    if ($script:UpdateTask -and $script:UpdateTask.IsCompleted) { Complete-UpdateCheck }
+    elseif (-not $script:UpdateTask -and (Get-Date) -ge $script:NextUpdateCheck) { Start-UpdateCheck }
+    # apply a downloaded update quietly while nobody is looking at the app
+    if ($script:UpdateReady -and -not $win.IsVisible -and $script:Popups.Count -eq 0) { Restart-App -Hidden }
     if ($win.IsVisible -and (Get-Date).Second -eq 0) {
         if ((Get-Date).Date -ne $script:LastDay) { $script:LastDay = (Get-Date).Date; Update-Views } else { Update-Clock }
     }

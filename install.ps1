@@ -15,7 +15,8 @@ $AppFile    = Join-Path $InstallDir 'ReminderCalendar.ps1'
 $Uninstaller = Join-Path $InstallDir 'uninstall.ps1'
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ReminderCalendar'
 $PowerShellExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-$Icon       = "$env:SystemRoot\System32\shell32.dll,21"
+$IconFile   = Join-Path $InstallDir 'icon.ico'
+$Icon       = $IconFile
 $Shortcuts  = @(
     (Join-Path ([Environment]::GetFolderPath('Programs')) "$AppName.lnk"),
     (Join-Path ([Environment]::GetFolderPath('Desktop')) "$AppName.lnk"),
@@ -52,18 +53,21 @@ if ($Uninstall) {
 Write-Host "Installing $AppName..."
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
-# Use the copy next to this script when run from a clone; otherwise download it from GitHub.
-$local = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'ReminderCalendar.ps1' }
-$tmp = Join-Path $env:TEMP "ReminderCalendar-$([guid]::NewGuid()).ps1"
-if ($local -and (Test-Path $local)) {
-    Copy-Item $local $tmp
-} else {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/$Repo/$Branch/ReminderCalendar.ps1" -OutFile $tmp
+# Use the files next to this script when run from a clone; otherwise download them from GitHub.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+function Get-AppFile([string]$name) {
+    $tmp = Join-Path $env:TEMP "ReminderCalendar-$([guid]::NewGuid())-$name"
+    $local = if ($PSScriptRoot) { Join-Path $PSScriptRoot $name }
+    if ($local -and (Test-Path $local)) { Copy-Item $local $tmp }
+    else { Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/$Repo/refs/heads/$Branch/$name" -OutFile $tmp }
+    $tmp
 }
+$newApp  = Get-AppFile 'ReminderCalendar.ps1'
+$newIcon = Get-AppFile 'icon.ico'
 
 Stop-App   # so an update can replace the file
-Move-Item $tmp $AppFile -Force
+Move-Item $newApp $AppFile -Force
+Move-Item $newIcon $IconFile -Force
 Unblock-File $AppFile
 
 # Uninstaller + entry in Settings > Apps
