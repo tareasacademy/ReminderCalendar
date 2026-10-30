@@ -8,7 +8,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, Sys
 [System.Windows.Forms.Application]::SetUnhandledExceptionMode('CatchException')
 
 $AppName      = 'Reminder Calendar'
-$AppVersion   = '1.3.0'
+$AppVersion   = '1.3.1'
 $Repo         = 'tareasacademy/ReminderCalendar'
 $RawBase      = "https://raw.githubusercontent.com/$Repo/refs/heads/main"
 $ScriptPath   = $PSCommandPath
@@ -1489,9 +1489,6 @@ function Set-UpdateStatus([string]$text) {
     $TxtUpdate.Visibility = if ($text) { 'Visible' } else { 'Collapsed' }
 }
 
-function Get-Sha([byte[]]$bytes) {
-    [Convert]::ToBase64String([System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes))
-}
 
 function Start-UpdateCheck([switch]$Manual) {
     if ($IsDevCopy -or $script:UpdateTask -or $script:UpdateReady) { return }
@@ -1516,20 +1513,24 @@ function Complete-UpdateCheck {
         return
     }
     $bytes = $task.Result
-    if ((Get-Sha $bytes) -eq (Get-Sha ([IO.File]::ReadAllBytes($ScriptPath)))) {
+    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    # Only move to a higher version. GitHub's CDN can serve the previous file for a few
+    # minutes after a push, and taking that would be a downgrade.
+    $remote = $null
+    if (-not ($text -match "\`$AppVersion\s*=\s*'([\d.]+)'" -and [version]::TryParse($Matches[1], [ref]$remote)) -or
+        $remote -le [version]$AppVersion) {
         if ($script:UpdateManual) { Set-UpdateStatus "You're up to date." }
         return
     }
-    # Only accept something that is really this app and parses cleanly.
-    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    $ver = $Matches[1]
+    # Only accept something that is really this app, parses cleanly and can take over from us on restart.
     $tok = $null; $errs = $null
     [void][System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$tok, [ref]$errs)
-    if ($errs.Count -or $text -notmatch "\`$AppName\s*=\s*'Reminder Calendar'") {
+    if ($errs.Count -or $text -notmatch "\`$AppName\s*=\s*'Reminder Calendar'" -or $text -notmatch '\[int\]\$WaitPid') {
         Write-ErrorLog "Update rejected: downloaded file failed validation."
         if ($script:UpdateManual) { Set-UpdateStatus "The update looked broken, so it was skipped." }
         return
     }
-    $ver = if ($text -match "\`$AppVersion\s*=\s*'([^']+)'") { $Matches[1] } else { 'A new version' }
 
     # The running copy is already in memory, so the file can be replaced now.
     $tmp = "$ScriptPath.new"
@@ -1539,7 +1540,7 @@ function Complete-UpdateCheck {
         try { [IO.File]::WriteAllBytes($IconFile, $script:Http.GetByteArrayAsync("$RawBase/icon.ico").Result) } catch {}
     }
     $script:UpdateReady = $true
-    $TxtUpdateBanner.Text = $(if ($ver -match '^\d') { "Version $ver is ready" } else { "$ver is ready" })
+    $TxtUpdateBanner.Text = "Version $ver is ready"
     $UpdateBanner.Visibility = 'Visible'
     Set-UpdateStatus ''
 }
